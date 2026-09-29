@@ -1,0 +1,85 @@
+pipeline {
+  agent any
+
+  parameters {
+    string(
+      name: 'DEPLOY_VERSION',
+      defaultValue: '1.0.2',
+      description: '배포할 애플리케이션 버전'
+    )
+    choice(
+      name: 'HOST_LIMIT',
+      choices: ['rolling_targets', 'app01', 'app02', 'app03'],
+      description: '배포 대상 그룹 또는 서버'
+    )
+    choice(
+      name: 'TAGS',
+      choices: ['all', 'deploy', 'healthcheck', 'secrets'],
+      description: '실행할 Ansible 태그'
+    )
+    booleanParam(
+      name: 'CONFIRM_DEPLOY',
+      defaultValue: false,
+      description: '운영 배포를 실행하려면 선택'
+    )
+  }
+
+  stages {
+    stage('Install Ansible dependencies') {
+      steps {
+        dir('study/week5/doyeon') {
+          sh 'ansible-galaxy install -r requirements.yml'
+        }
+      }
+    }
+
+    stage('Lint') {
+      steps {
+        dir('study/week5/doyeon') {
+          sh 'ansible-lint playbooks roles'
+        }
+      }
+    }
+
+    stage('Syntax check') {
+      steps {
+        dir('study/week5/doyeon') {
+          withCredentials([
+            file(credentialsId: 'ansible-vault-production', variable: 'VAULT_FILE')
+          ]) {
+            sh '''
+              set +x
+              ansible-playbook playbooks/rolling-deploy.yml \
+                --syntax-check \
+                --vault-id production@"$VAULT_FILE"
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Rolling deploy') {
+      when {
+        expression { return params.CONFIRM_DEPLOY }
+      }
+      steps {
+        dir('study/week5/doyeon') {
+          sshagent(credentials: ['app-server-ssh-key']) {
+            withCredentials([
+              file(credentialsId: 'ansible-vault-production', variable: 'VAULT_FILE')
+            ]) {
+              sh '''
+                set +x
+                ansible-playbook playbooks/rolling-deploy.yml \
+                  --limit "$HOST_LIMIT" \
+                  --tags "$TAGS" \
+                  -e "deploy_version=$DEPLOY_VERSION" \
+                  --vault-id production@"$VAULT_FILE"
+              '''
+            }
+          }
+        }
+      }
+    }
+  }
+}
