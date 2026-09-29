@@ -1,0 +1,44 @@
+---
+- name: Observe Ansible concurrency controls
+  hosts: rolling_targets
+  gather_facts: false
+
+  tasks:
+    - name: Simulate independent work for forks comparison
+      ansible.builtin.command:
+        argv:
+          - sleep
+          - "3"
+      changed_when: false
+      tags:
+        - forks
+
+    - name: Simulate shared API access one host at a time
+      ansible.builtin.command:
+        argv:
+          - sleep
+          - "1"
+      changed_when: false
+      throttle: 1
+      tags:
+        - throttle
+
+    - name: Create one deployment marker on the controller
+      ansible.builtin.command:
+        argv:
+          - date
+          - "+%Y-%m-%dT%H:%M:%S%z"
+      delegate_to: localhost
+      run_once: true
+      register: deployment_marker
+      changed_when: false
+      tags:
+        - run_once
+        - delegate
+
+    - name: Show deployment marker to every target
+      ansible.builtin.debug:
+        msg: "Controller created one marker: {{ deployment_marker.stdout }}"
+      tags:
+        - run_once
+        - delegate

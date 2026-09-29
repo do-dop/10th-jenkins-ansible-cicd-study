@@ -1,0 +1,44 @@
+---
+- name: Stop when one failure exceeds forty-nine percent
+  hosts: rolling_targets
+  gather_facts: false
+  serial: 2
+  max_fail_percentage: 49
+  tags:
+    - threshold_stop
+
+  tasks:
+    - name: Show the current batch
+      ansible.builtin.debug:
+        msg: "Current batch is {{ ansible_play_batch }}."
+
+    - name: Simulate one failed host in the first batch
+      ansible.builtin.fail:
+        msg: "Intentional failure on app02 for max_fail_percentage learning."
+      when: inventory_hostname == 'app02'
+
+    - name: Show hosts allowed to continue after the failure
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} was allowed to continue."
+
+- name: Continue when one failure does not exceed fifty percent
+  hosts: rolling_targets
+  gather_facts: false
+  serial: 2
+  max_fail_percentage: 50
+  tags:
+    - threshold_continue
+
+  tasks:
+    - name: Show the current batch
+      ansible.builtin.debug:
+        msg: "Current batch is {{ ansible_play_batch }}."
+
+    - name: Simulate one failed host in the first batch
+      ansible.builtin.fail:
+        msg: "Intentional failure on app02 for max_fail_percentage learning."
+      when: inventory_hostname == 'app02'
+
+    - name: Show hosts allowed to continue after the failure
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} was allowed to continue."

@@ -1,0 +1,46 @@
+---
+- name: Observe batches with serial two
+  hosts: rolling_targets
+  gather_facts: false
+  serial: 2
+  tags:
+    - serial_two
+
+  tasks:
+    - name: Show the current batch
+      ansible.builtin.debug:
+        msg: "Current batch is {{ ansible_play_batch }}."
+
+    - name: Simulate work in the current batch
+      ansible.builtin.command:
+        argv:
+          - sleep
+          - "2"
+      changed_when: false
+
+    - name: Confirm current batch completion
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} completed its current batch."
+
+- name: Observe batches with serial fifty percent
+  hosts: rolling_targets
+  gather_facts: false
+  serial: "50%"
+  tags:
+    - serial_percentage
+
+  tasks:
+    - name: Show the current batch
+      ansible.builtin.debug:
+        msg: "Current batch is {{ ansible_play_batch }}."
+
+    - name: Simulate work in the current batch
+      ansible.builtin.command:
+        argv:
+          - sleep
+          - "2"
+      changed_when: false
+
+    - name: Confirm current batch completion
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} completed its current batch."

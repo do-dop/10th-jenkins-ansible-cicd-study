@@ -454,7 +454,66 @@ serial:
 
 ---
 
-## 8. 학습·검증 순서
+## 8. 이번 실습 요약
+
+이번 실습에서는 app01, app02, app03을 대상으로 `sleep`, `debug`, 의도적 `fail`만 실행했다. Nginx 설정이나 배포 파일은 바꾸지 않았다.
+
+### 실행 전략: `linear`과 `free`
+
+[`strategy-lab.yml`](playbooks/strategy-lab.yml)은 서버별 대기 시간을 app01=1초, app02=3초, app03=5초로 다르게 설정한다.
+
+```bash
+ansible-playbook playbooks/strategy-lab.yml \
+  -e 'lab_strategy=linear' -f 3 \
+  --vault-id production@vault-password-production
+```
+
+`linear`에서는 app03의 대기가 끝난 뒤에야 세 서버 모두 Step 2를 시작했다. 같은 파일을 `-e 'lab_strategy=free'`로 실행하면 app01은 1초 후 바로 Step 2로 이동하고, app02·app03은 자기 대기를 마친 뒤 각각 이동했다.
+
+### `forks`와 `throttle`
+
+[`concurrency-lab.yml`](playbooks/concurrency-lab.yml)의 `forks` Task는 각 서버에서 3초 동안 독립 작업을 흉내 낸다.
+
+```bash
+time ansible-playbook playbooks/concurrency-lab.yml \
+  --tags forks -f 1 \
+  --vault-id production@vault-password-production
+
+time ansible-playbook playbooks/concurrency-lab.yml \
+  --tags forks -f 3 \
+  --vault-id production@vault-password-production
+```
+
+`-f 1`은 약 13.8초, `-f 3`은 약 4.3초가 걸렸다. 대기 시간 외에 SSH 연결과 Ansible 초기화 시간이 포함되지만, worker 수를 늘리면 독립 작업이 병렬로 처리된다는 점을 확인할 수 있다.
+
+같은 파일의 `throttle` Task에는 `throttle: 1`을 넣었다. `-f 3`으로 실행해도 app01 → app02 → app03 순으로 해당 Task가 하나씩 진행됐다.
+
+### `run_once`와 `delegate_to`
+
+```bash
+ansible-playbook playbooks/concurrency-lab.yml \
+  --tags run_once -f 3 \
+  --vault-id production@vault-password-production
+```
+
+로그의 `app01 -> localhost`는 app01이 현재 배치의 대표 호스트이고, 명령은 관리 노드인 localhost에서 실행됐다는 뜻이다. `run_once` Task가 만든 marker 값은 현재 배치의 app01·app02·app03 모두가 참조했다.
+
+### `serial` 배치와 실패 비율
+
+[`batch-lab.yml`](playbooks/batch-lab.yml)에서 `serial: 2`는 `[app01, app02]` 배치를 끝낸 뒤 `[app03]` 배치로 진행했다. `serial: "50%"`는 대상 세 대의 50%가 1.5대이므로 최소 정수 배치인 한 대씩 app01 → app02 → app03으로 진행했다.
+
+[`failure-threshold-lab.yml`](playbooks/failure-threshold-lab.yml)은 첫 배치(app01, app02)에서 app02만 의도적으로 실패시켰다.
+
+| 설정 | 1/2 실패 시 결과 |
+|---|---|
+| `max_fail_percentage: 49` | 실패율 50%가 기준을 초과하므로 app03 배치를 시작하지 않음 |
+| `max_fail_percentage: 50` | 실패율 50%가 기준과 같으므로 app01과 app03은 계속 진행 |
+
+`max_fail_percentage`는 기준과 같을 때가 아니라 **기준을 초과할 때** 중단한다.
+
+---
+
+## 9. 학습·검증 순서
 
 1. 인벤토리에 테스트 호스트 3대를 준비한다. 로컬 검증에는 `ansible_connection: local`도 사용할 수 있다.
 2. 동일한 `debug` + `command: sleep` Playbook을 `linear`과 `free`로 각각 실행해 출력 순서를 비교한다.

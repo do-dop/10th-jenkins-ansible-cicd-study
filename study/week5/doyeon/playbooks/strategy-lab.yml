@@ -1,0 +1,26 @@
+---
+- name: Compare Ansible execution strategies
+  hosts: rolling_targets
+  gather_facts: false
+  strategy: "{{ lab_strategy | default('linear') }}"
+  vars:
+    lab_wait_seconds:
+      app01: 1
+      app02: 3
+      app03: 5
+
+  tasks:
+    - name: Announce first step
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} starts step 1."
+
+    - name: Wait for a host-specific duration
+      ansible.builtin.command:
+        argv:
+          - sleep
+          - "{{ lab_wait_seconds[inventory_hostname] | string }}"
+      changed_when: false
+
+    - name: Announce second step
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} starts step 2."
