@@ -5,3 +5,5 @@ app_deploy_health_path: /health
 app_deploy_health_url: "http://127.0.0.1{{ app_deploy_health_path }}"
 app_deploy_health_retries: 5
 app_deploy_health_delay: 2
+app_deploy_simulate_health_failure: false
+app_deploy_failure_host: ""

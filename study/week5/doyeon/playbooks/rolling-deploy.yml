@@ -1,0 +1,33 @@
+---
+- name: Roll out application one server at a time
+  hosts: rolling_targets
+  become: true
+  gather_facts: false
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+
+  tasks:
+    - name: Deploy and verify current server
+      block:
+        - name: Run application deployment role
+          ansible.builtin.include_role:
+            name: app_deploy
+          tags:
+            - always
+          vars:
+            app_deploy_version: "{{ deploy_version | default('1.0.0') }}"
+
+      rescue:
+        - name: Record deployment failure
+          ansible.builtin.debug:
+            msg: "Deployment failed on {{ inventory_hostname }}. Remaining servers will not be deployed."
+
+        - name: Stop rolling deployment
+          ansible.builtin.fail:
+            msg: "Rolling deployment stopped because {{ inventory_hostname }} failed."
+
+      always:
+        - name: Record current server result
+          ansible.builtin.debug:
+            msg: "Finished rolling deployment batch for {{ inventory_hostname }}."
