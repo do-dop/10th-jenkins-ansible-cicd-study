@@ -1,0 +1,18 @@
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    root {{ app_deploy_root }};
+    index index.html;
+
+    location = {{ app_deploy_health_path }} {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}

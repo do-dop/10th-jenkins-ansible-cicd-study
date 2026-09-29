@@ -1,0 +1,4 @@
+---
+common_nginx_package: nginx
+common_nginx_service: nginx
+common_app_root: /var/www/rolling-demo

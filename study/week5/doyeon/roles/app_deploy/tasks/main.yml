@@ -1,0 +1,67 @@
+---
+- name: Deploy application status page
+  ansible.builtin.template:
+    src: status.html.j2
+    dest: "{{ app_deploy_root }}/index.html"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload Nginx
+  tags:
+    - deploy
+
+- name: Deploy Nginx site configuration
+  ansible.builtin.template:
+    src: rolling-demo.conf.j2
+    dest: /etc/nginx/sites-available/rolling-demo
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload Nginx
+  tags:
+    - deploy
+
+- name: Enable rolling demo Nginx site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/rolling-demo
+    dest: /etc/nginx/sites-enabled/rolling-demo
+    state: link
+  notify: Reload Nginx
+  tags:
+    - deploy
+
+- name: Disable default Nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Reload Nginx
+  tags:
+    - deploy
+
+- name: Apply pending Nginx handler changes
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - deploy
+    - healthcheck
+
+- name: Check application health endpoint
+  ansible.builtin.uri:
+    url: "{{ app_deploy_health_url }}"
+    method: GET
+    status_code: 200
+    return_content: true
+  register: app_deploy_health
+  retries: "{{ app_deploy_health_retries }}"
+  delay: "{{ app_deploy_health_delay }}"
+  until: app_deploy_health.status == 200
+  tags:
+    - healthcheck
+
+- name: Assert health endpoint response
+  ansible.builtin.assert:
+    that:
+      - "'ok' in app_deploy_health.content"
+    fail_msg: "Health endpoint did not return the expected response."
+    success_msg: "Health endpoint returned HTTP 200 and the expected response."
+  tags:
+    - healthcheck

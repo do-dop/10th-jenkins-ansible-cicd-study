@@ -1,0 +1,21 @@
+---
+- name: Install Nginx
+  ansible.builtin.apt:
+    name: "{{ common_nginx_package }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create common application directory
+  ansible.builtin.file:
+    path: "{{ common_app_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Enable and start Nginx
+  ansible.builtin.service:
+    name: "{{ common_nginx_service }}"
+    state: started
+    enabled: true

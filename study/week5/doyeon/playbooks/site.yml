@@ -1,0 +1,8 @@
+---
+- name: Prepare rolling deployment targets
+  hosts: rolling_targets
+  become: true
+
+  roles:
+    - common
+    - app_deploy

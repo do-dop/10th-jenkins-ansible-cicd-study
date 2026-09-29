@@ -1,0 +1,7 @@
+---
+app_deploy_root: /var/www/rolling-demo
+app_deploy_version: "1.0.0"
+app_deploy_health_path: /health
+app_deploy_health_url: "http://127.0.0.1{{ app_deploy_health_path }}"
+app_deploy_health_retries: 5
+app_deploy_health_delay: 2
