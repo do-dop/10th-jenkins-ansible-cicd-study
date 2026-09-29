@@ -28,7 +28,7 @@ pipeline {
     stage('Install Ansible dependencies') {
       steps {
         dir('study/week5/doyeon') {
-          sh 'ansible-galaxy install -r requirements.yml'
+          sh 'ansible-galaxy collection install -r requirements.yml'
         }
       }
     }
