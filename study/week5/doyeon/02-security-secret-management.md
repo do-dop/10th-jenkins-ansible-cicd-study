@@ -170,6 +170,35 @@ Git에 커밋하지 않는다.
 chmod 600 vault-password-production
 ```
 
+### 인벤토리 그룹과 Vault 파일이 읽히는 범위
+
+`group_vars/<그룹 이름>/` 아래의 변수 파일은 해당 그룹과 그 하위 그룹의 호스트에 적용된다. 따라서 그 안에 암호화된 `vault.yml`이 있으면, Playbook의 Task가 Secret 변수를 직접 사용하지 않아도 Ansible은 파일을 읽고 복호화를 준비한다.
+
+이번 인벤토리는 다음 관계다.
+
+```text
+production
+└── rolling_targets
+    ├── app01
+    ├── app02
+    └── app03
+```
+
+`inventory/group_vars/production/vault.yml`에 암호문이 있으므로 `rolling_targets`를 대상으로 하는 단순 실행 전략 실습도 Vault 비밀번호 없이 실행하면 실패한다.
+
+```text
+Attempting to decrypt but no vault secrets found.
+```
+
+이 경우에는 Task가 Secret을 사용하지 않더라도 해당 환경의 Vault ID를 전달한다.
+
+```bash
+ansible-playbook playbooks/strategy-lab.yml \
+  --vault-id production@vault-password-production
+```
+
+Vault 파일을 필요한 환경 그룹 아래에 두는 것은 환경별 Secret 범위를 분리하는 방법이다. 반대로 Secret이 전혀 필요 없는 독립 실습은 `production`의 하위 그룹이 아닌 별도 인벤토리 그룹을 대상으로 구성할 수 있다.
+
 ### Client Script
 
 Client Script는 Ansible이 실행할 때 Keychain, 데이터베이스, HashiCorp Vault 같은 외부 저장소에서 Vault 비밀번호를 읽어 오는 프로그램이다.
@@ -320,6 +349,64 @@ Secret 사용 Task에는 no_log를 적용한다.
 필요한 주체에만 최소 권한을 부여한다.
 Secret과 Vault 비밀번호를 분리해서 관리한다.
 ```
+
+---
+
+## 10. 실습 기록: Jenkins에서 Vault와 SSH Credential 전달
+
+Jenkins Pipeline은 Ansible을 실행하는 Controller 역할을 한다. 따라서 Pipeline에는 두 종류의 Credential이 필요했다.
+
+| Jenkins Credential ID | 종류 | 사용 목적 |
+|---|---|---|
+| `ansible-vault-production` | Secret file | `vault.yml`을 복호화할 Vault 비밀번호 파일 전달 |
+| `app-server-ssh-key` | SSH Username with private key | Jenkins Agent가 App VM에 SSH 접속 |
+
+Vault 비밀번호 파일은 `withCredentials(file(...))`로, SSH 개인키는 `sshagent(...)`로 Pipeline 실행 중에만 전달한다.
+
+```groovy
+sshagent(credentials: ['app-server-ssh-key']) {
+  withCredentials([
+    file(credentialsId: 'ansible-vault-production', variable: 'VAULT_FILE')
+  ]) {
+    sh '''
+      set +x
+      ansible-playbook playbooks/rolling-deploy.yml \
+        --vault-id production@"$VAULT_FILE"
+    '''
+  }
+}
+```
+
+SSH 개인키에 passphrase가 설정되어 있다면 Jenkins Credential의 **Passphrase** 항목에도 같은 값을 등록해야 한다. 등록하지 않으면 Jenkins Agent의 `ssh-add`가 키를 잠금 해제할 수 없고 다음과 같이 실패한다.
+
+```text
+Enter passphrase for ...private_key...key:
+```
+
+passphrase는 개인키 파일을 보호하는 암호다. App VM 계정의 로그인 비밀번호나 Vault 비밀번호와는 다른 값이며, Git과 Jenkinsfile에 저장하지 않는다.
+
+### SSH Host Key 검증
+
+개인키를 올바르게 전달해도 Jenkins Agent가 App VM을 처음 만나는 경우 다음 오류가 날 수 있다.
+
+```text
+Host key verification failed.
+```
+
+이는 SSH가 서버의 신원을 확인하기 위해 `known_hosts`를 검사했지만, Jenkins Agent의 `~/.ssh/known_hosts`에 App VM의 host key가 없다는 뜻이다. 로컬 Mac의 `known_hosts`와 Jenkins Agent 컨테이너의 `known_hosts`는 서로 다른 파일이다.
+
+실습에서는 Jenkins Agent 컨테이너의 `jenkins` 사용자에게 host key를 등록했다.
+
+```bash
+docker exec -u jenkins jenkins-agent1 sh -lc \
+  'mkdir -p /home/jenkins/.ssh && chmod 700 /home/jenkins/.ssh && \
+  ssh-keyscan -H <app01-ip> <app02-ip> <app03-ip> >> /home/jenkins/.ssh/known_hosts && \
+  chmod 600 /home/jenkins/.ssh/known_hosts'
+```
+
+`ssh-keyscan` 결과를 바로 신뢰하는 방식은 최초 연결 시 위조 서버를 구별하지 못할 수 있다. 운영 환경에서는 VM 콘솔·클라우드 관리 화면 등 별도 신뢰 경로로 host key fingerprint를 확인한 뒤 `known_hosts`에 고정해야 한다. `host_key_checking=False`로 검증을 끄는 방식은 문제를 숨길 뿐 서버 신원 확인을 포기하므로 사용하지 않는다.
+
+Jenkins Agent 컨테이너를 삭제하거나 새로 만들면 이 `known_hosts` 등록은 사라질 수 있다. 반복 가능한 운영 환경에서는 검증한 host key 목록을 Agent 이미지, Configuration as Code, 또는 안전하게 관리되는 Pipeline 준비 단계에 포함한다.
 
 ## 참고 문서
 
