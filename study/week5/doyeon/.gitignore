@@ -1,0 +1,3 @@
+# Local Ansible Vault password files must never be committed.
+.vault_pass*
+vault-password-*

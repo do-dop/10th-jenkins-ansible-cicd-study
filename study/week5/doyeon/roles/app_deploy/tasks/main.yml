@@ -38,10 +38,43 @@
   tags:
     - deploy
 
+- name: Create runtime configuration directory
+  ansible.builtin.file:
+    path: /etc/rolling-demo
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: demo_db_password is defined
+  no_log: true
+  tags:
+    - secrets
+
+- name: Deploy runtime configuration with secret
+  ansible.builtin.template:
+    src: runtime.env.j2
+    dest: /etc/rolling-demo/app.env
+    owner: root
+    group: root
+    mode: "0600"
+  when: demo_db_password is defined
+  no_log: true
+  tags:
+    - secrets
+
 - name: Apply pending Nginx handler changes
   ansible.builtin.meta: flush_handlers
   tags:
     - deploy
+    - healthcheck
+
+- name: Simulate health check failure for learning
+  ansible.builtin.fail:
+    msg: "Intentional health check failure on {{ inventory_hostname }}."
+  when:
+    - app_deploy_simulate_health_failure | bool
+    - inventory_hostname == app_deploy_failure_host
+  tags:
     - healthcheck
 
 - name: Check application health endpoint
