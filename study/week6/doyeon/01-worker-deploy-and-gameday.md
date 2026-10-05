@@ -1,7 +1,6 @@
-# 반려동물 영상 분석 worker를 Ansible과 Jenkins로 배포하고 장애를 시험해 본 기록
+# 반려동물 영상 분석 worker 배포와 장애 실습
 
-> 아래 순서대로 읽으며 설명한다.
-> 서비스 소개 → 구조와 역할 → Ansible → Jenkins → 장애 실습 → 한계
+> 서비스 소개 → 전체 구조 → Ansible 배포 → Jenkins 파이프라인 → 장애 실습 → 다음 계획
 
 ---
 
@@ -21,13 +20,13 @@
 
 ![배포 파이프라인과 운영 중 영상 처리 구조](assets/worker-deployment-and-video-processing.png)
 
-위쪽 파란 영역은 **배포 흐름**, 아래쪽 초록 영역은 **운영 중 영상 처리 흐름**이다. 파란 점선은 이미지와 배포 명령의 이동을, 초록 실선은 실제 영상 파일과 처리 결과의 이동을 나타낸다.
+그림의 파란 영역은 **배포 흐름**, 초록 영역은 **운영 중 영상 처리 흐름**이다. 점선은 배포에 필요한 이미지와 명령, 실선은 영상과 처리 결과의 이동을 나타낸다.
 
 ### 배포 흐름
 
-1. 개발자가 worker가 포함된 Docker 이미지를 미리 빌드해 **Artifact Registry**에 버전 태그와 함께 올린다. Jenkins는 이미지를 빌드하지 않는다.
-2. 배포 담당자가 Jenkins에 이미지 태그를 입력한다. Jenkins는 파라미터 검증, Lint, Syntax check, Dry run을 거쳐 승인을 받은 뒤 Ansible playbook을 실행한다.
-3. Ansible은 `lab-worker` Compute Engine VM을 설정하고 Docker Compose로 RabbitMQ와 Celery worker 등을 배포한다. VM은 지정된 태그의 이미지를 Artifact Registry에서 가져온다. Ansible은 기동 상태와 작업 가능 여부를 확인하고, 실패하면 직전 정상 이미지로 복구한다.
+1. 개발자가 worker Docker 이미지를 빌드해 **Artifact Registry**에 버전 태그와 함께 올린다.
+2. 배포 담당자가 Jenkins에 태그를 입력한다. Jenkins는 입력값·코드·변경 사항을 검사하고 승인 후 Ansible playbook을 실행한다.
+3. Ansible은 `lab-worker` VM을 설정하고, 지정한 이미지를 가져와 Docker Compose로 서비스를 실행한다. 상태 검증에 실패하면 직전 정상 이미지로 복구한다.
 
 ### 영상 처리 흐름
 
@@ -136,46 +135,7 @@ rescue  : 직전 정상 이미지로 .env 재렌더링 → 기동 → 복구 이
 always  : Docker 로그인 정보 삭제
 ```
 
-핵심 코드는 다음과 같다. (발표용으로 줄여 쓴 것이며, 실제 파일은 `roles/worker/tasks/main.yml`이다. `rescue`의 인라인 `{...}` 표기는 생략을 뜻한다.)
-
-```yaml
-- name: Deploy the worker image, verify it, and roll back on failure
-  block:
-    - name: Start RabbitMQ, Cloud SQL proxy, and worker
-      community.docker.docker_compose_v2:
-        project_src: "{{ worker_dir }}"
-        pull: "{{ 'never' if ansible_check_mode else 'always' }}"
-        state: present
-        wait: true
-
-    - name: Verify the worker is healthy
-      ansible.builtin.include_tasks: verify.yml
-
-    - name: Record this image as the last good one      # 검증을 통과해야만 도달
-      ansible.builtin.copy:
-        content: "{{ worker_image }}\n"
-        dest: "{{ worker_dir }}/.last_good_image"
-
-  rescue:
-    - name: Restore the last good image
-      when: last_good_image | length > 0 and last_good_image != worker_image
-      block:
-        - { name: Render Compose settings for the last good image,
-            ansible.builtin.template: {...},
-            vars: { worker_image_to_run: "{{ last_good_image }}" } }
-        - { name: Start the last good image, community.docker.docker_compose_v2: {...} }
-        - { name: Verify the restored image is healthy, ansible.builtin.include_tasks: verify.yml }
-
-    - name: Fail the run so the pipeline is marked as failed
-      ansible.builtin.fail:
-        msg: "Deploying {{ worker_image }} failed its health check. Rolled back to ..."
-
-  always:
-    - name: Remove the temporary registry login
-      ansible.builtin.command: docker logout ...
-```
-
-설명 포인트:
+구현 위치는 `roles/worker/tasks/main.yml`이다. 이 흐름에서 중요한 조건은 다음과 같다.
 
 1. **헬스 체크는 두 겹이다.** 컨테이너가 바로 죽으면 `compose up --wait`가 잡고, 컨테이너는 살아 있지만 일을 못 하면 `verify.yml`이 잡는다.
    - `verify.yml`: worker 메트릭 엔드포인트가 200을 응답하는지, RabbitMQ에 소비자가 붙었는지를 재시도하며 확인
@@ -300,16 +260,16 @@ worker 코드에 다음을 넣었다.
 
 ### 5.2 결과 요약
 
-| # | 장애 | 결과 | 작업 유실 | 중복 저장 |
-|---|---|---|---|---|
-| 1 | `docker kill`로 worker 종료 | 자동 복구 **안 됨**. 메시지는 큐에 남음. 수동 시작 후 재처리 | 없음 | 없음 |
-| 2 | `kill -9`(비정상 종료) | Docker가 4초 만에 재시작, 약 12초 뒤 큐 재연결 | 없음 | 없음 |
-| 3 | RabbitMQ 중지 | API는 2초 만에 503. worker는 재연결을 반복하다 복귀(약 22초) | 없음 (중단 중 접수는 큐에 쌓이지 않음) | 없음 |
-| 4 | worker를 멈춘 사이 같은 청크 2회 접수 | 하나는 처리, 하나는 0.06초 만에 `duplicate`로 종료 | 없음 | 없음 |
-| 5 | 손상된 영상 | 4회 시도 후 폐기 | 해당 작업만 폐기 | 없음 |
-| 6 | Cloud SQL 프록시 중지 후 복구 | 재시도 중 복구되어 3회차에 성공 | 없음 | 없음 |
-| 7 | worker → ChromaDB 통신 차단 | 4회 시도가 약 1분에 모두 실패하고 **메시지가 사라짐** | **발생** | 없음 |
-| 8 | 청크 4건 연속 접수 | API는 모두 1~2초에 접수. 큐에 쌓여 순차 처리, 483초에 소진 | 없음 | 없음 |
+1. **worker 종료 (`docker kill`):** 자동 재시작되지 않았다. 메시지는 큐에 남았고, 수동 시작 후 재처리됐다.
+2. **worker 비정상 종료 (`kill -9`):** Docker가 4초 만에 재시작했고 약 12초 뒤 큐에 다시 연결됐다.
+3. **RabbitMQ 중지:** API는 2초 만에 503을 반환했다. worker는 재연결을 반복해 약 22초 뒤 복귀했다. 중단 중 들어온 요청은 큐에 저장되지 않았다.
+4. **같은 청크 두 번 접수:** 하나는 처리됐고, 다른 하나는 0.06초 만에 `duplicate`로 종료됐다.
+5. **손상된 영상:** 4회 시도 후 해당 작업이 폐기됐다.
+6. **Cloud SQL 프록시 중지:** 재시도 중 프록시를 복구하자 3회차에 성공했다.
+7. **ChromaDB 통신 차단:** 약 1분간 4회 시도가 모두 실패했고 **메시지가 사라졌다.**
+8. **청크 4건 연속 접수:** API는 각 건을 1~2초에 접수했다. 작업은 큐에서 순차 처리되어 483초에 모두 끝났다.
+
+**결과:** 정상 영상의 처리 누락은 7번에서 발생했다. 손상된 영상은 재시도 후 폐기됐고, 완료된 작업의 중복 저장은 없었다.
 
 실험 전후 DB 수치로 검증했다.
 
@@ -322,10 +282,12 @@ worker 코드에 다음을 넣었다.
 
 ### 5.3 특히 이야기할 만한 세 가지
 
-**① 처리 중 크래시, 재전달, 중복 방지가 함께 작동함 (실험 1, 2, 4)**
+#### 처리 중 크래시와 중복 방지 (실험 1, 2, 4)
+
 처리 중에 worker가 죽어도 메시지가 큐로 돌아가 같은 작업이 다시 실행됐다. 그런데도 DB 행 수가 기대값과 정확히 일치했다.
 
-**② 의도하지 않게 발견한 heartbeat 문제**
+#### 긴 작업에서 발견한 heartbeat 문제
+
 첫 청크가 277초 걸렸는데, 끝난 뒤 ack가 `Connection reset by peer`로 실패하고 같은 메시지가 재전달됐다.
 
 - 원인: worker가 `solo` 풀이라 작업 중에는 **RabbitMQ로 heartbeat를 보내지 못한다.** 신호가 끊기자 RabbitMQ가 연결을 닫았다.
@@ -333,8 +295,9 @@ worker 코드에 다음을 넣었다.
 - 수정: `broker_heartbeat=0`. 재시험에서 재발하지 않았다.
 - 교훈: `acks_late`로 안전해지는 대신, 긴 작업과 연결 유지 방식의 상호작용을 따로 확인해야 한다.
 
-**③ ChromaDB 차단에서 작업이 사라진 것 (실험 7)**
-유일하게 처리 누락이 생긴 경우다. 재시도를 모두 쓰면 메시지가 ack되어 큐에서 사라지고, 실패 작업을 보관하는 곳(데드레터 큐)도 알림도 없다. "다 잘 됐다"가 아니라 **한계를 발견한 실험**이다.
+#### ChromaDB 차단 후 작업 누락 (실험 7)
+
+정상 영상인데도 처리 결과가 남지 않은 경우다. 재시도를 모두 쓰면 메시지가 ack되어 큐에서 사라진다. 실패 작업을 보관할 데드레터 큐나 알림도 없어 **한계를 확인한 실험**이 됐다.
 
 (ChromaDB는 staging과 공유하는 서버라서 서버를 내리지 않고, worker VM의 방화벽에서 이 VM의 발신 포트만 막았다. 계획서의 "특정 통신만 제한" 원칙을 따랐다.)
 
@@ -367,9 +330,9 @@ worker 코드에 다음을 넣었다.
 
 ### 다음 계획
 
-**실습 목적:** Ansible을 최초 배포뿐 아니라 **운영 중 장애의 진단·복구**에도 사용해 본다. Prometheus는 장애를 감지하고, Jenkins는 대응 절차와 승인을 관리하며, 실제 서버 작업은 Ansible playbook으로 수행한다.
+**실습 목적:** 운영 중 장애에도 Ansible로 진단·복구해 본다. Prometheus가 감지하고, Jenkins가 절차와 승인을 관리하며, Ansible이 서버 작업을 수행한다.
 
-1. **모니터링 분리:** `lab-monitor` VM에 Ansible `monitoring` role로 Prometheus·Grafana·Alertmanager를 배포한다. 인벤토리 기반 `prometheus.yml` 템플릿을 만들고, `lab-worker`에는 node_exporter를 추가한다. worker·RabbitMQ 메트릭은 내부 IP에서 수집하되 방화벽은 monitor VM만 허용한다. `--check --diff`와 재실행으로 멱등성도 확인한다.
-2. **운영 장애 대응 실습:** 소비자 수 0이 5분 지속, 큐 대기 증가, 청크 실패율 상승에 대한 규칙을 만든다. Alertmanager 웹훅이 Jenkins job을 실행하면 Ansible `collect-diagnostics.yml`로 상태를 모으고, 승인 후 `recover-worker.yml`로 복구·검증한다. 자동 복구로 확대하기 전에는 반복 실행 상한을 정한다.
-3. **배포 검증 확장:** Jenkins가 배포 후 5분간 PromQL로 실패율을 확인하도록 한다.
-4. **후속 개선:** 실패 큐와 알림, Cloud Run 카나리 배포·롤백, 일반 배포와 분리된 장애 실험 job을 구현한다.
+1. **모니터링 구성:** Ansible `monitoring` role로 별도 `lab-monitor` VM에 Prometheus·Grafana·Alertmanager를 배포한다. 인벤토리로 수집 대상을 설정하고, worker VM에는 node_exporter를 추가한다. 메트릭 포트는 내부 IP에 열고 monitor VM의 접근만 허용한다. `--check --diff`와 재실행으로 멱등성을 확인한다.
+2. **장애 대응:** 소비자 수 0, 큐 대기 증가, 청크 실패율 상승을 감지한다. Alertmanager가 Jenkins job을 호출하면 `collect-diagnostics.yml`로 자동 진단하고, 승인 후 `recover-worker.yml`로 복구·검증한다. 자동 복구 전에는 반복 실행 상한을 정한다.
+3. **배포 검증:** Jenkins가 배포 후 5분간 PromQL로 실패율을 확인한다.
+4. **후속 개선:** 실패 큐와 알림, Cloud Run 카나리 배포·롤백, 별도의 장애 실험 job을 구현한다.
